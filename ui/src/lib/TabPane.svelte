@@ -1,7 +1,8 @@
 <!--
-  One tab's repository: the graph, the diff opened over it, the details panel, the find bar, the
-  filter picker and the graph's context menu. Every open tab keeps its pane mounted, hidden while another tab is in front, so
-  switching back finds the graph scrolled, the files focused and the diff open exactly as they were.
+  One tab's repository: its toolbar, what the repository is in the middle of, the graph, the diff
+  opened over it, the details panel, the find bar, the filter picker and the graph's context menu.
+  Every open tab keeps its pane mounted, hidden by the app while another tab of its group is shown,
+  so switching back finds the graph scrolled, the files focused and the diff open exactly as they were.
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
@@ -10,21 +11,25 @@
   import ContextMenu from "./ContextMenu.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
   import DiffView from "./DiffView.svelte";
+  import { describeFilter, isFiltered } from "./filter";
   import FilterPanel from "./FilterPanel.svelte";
   import FindBar from "./FindBar.svelte";
   import GraphView from "./GraphView.svelte";
   import { subjectOf, type FileList } from "./inspector.svelte";
   import type { Command, KeyContext } from "./keys";
   import { menuFor, type MenuContext, type MenuEntry, type MenuRequest } from "./menu";
+  import OperationStatus from "./OperationStatus.svelte";
+  import { settings } from "./settings.svelte";
+  import StateBanner from "./StateBanner.svelte";
   import type { Tab } from "./tabs.svelte";
 
   interface Props {
     tab: Tab;
-    /** Whether this tab is in front. */
-    active: boolean;
+    /** Whether this tab is the one its group shows. */
+    shown: boolean;
   }
 
-  let { tab, active }: Props = $props();
+  let { tab, shown }: Props = $props();
 
   /** Where focus was when a diff opened; it goes back there when the diff closes. */
   let focusBeforeDiff: HTMLElement | null = null;
@@ -63,7 +68,7 @@
 
   // A tab sent to the back closes its menu, rather than showing it again when it comes back.
   $effect(() => {
-    if (!active) untrack(() => (menu = null));
+    if (!shown) untrack(() => (menu = null));
   });
 
   // Tell the inspector what is selected, and when the repository may have changed (including
@@ -84,7 +89,7 @@
   });
 
   /** Opens the find bar (closing the diff over the graph) and focuses it. */
-  export async function openFind(): Promise<void> {
+  async function openFind(): Promise<void> {
     if (tab.inspector.diff) closeDiff();
     tab.finder.show();
     await tick();
@@ -97,7 +102,7 @@
   }
 
   /** Applies `filter` to this tab, closing the filter picker. */
-  export function applyFilter(filter: Filter): void {
+  function applyFilter(filter: Filter): void {
     tab.filterOpen = false;
     void tab.setFilter(filter);
     graphView?.focus();
@@ -189,61 +194,200 @@
   }
 </script>
 
-<div class="pane" class:hidden={!active} inert={!active}>
-  <div class="workspace">
-    <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
-    <div class="graph-layer" inert={tab.inspector.diff !== null}>
-      <GraphView
-        bind:this={graphView}
-        view={tab.view}
-        highlight={tab.finder.open ? tab.finder : undefined}
-        onactivate={() => (tab.detailsOpen = true)}
-        onmenu={openMenu}
-      />
-      {#if tab.finder.open}
-        <FindBar bind:this={findBar} finder={tab.finder} onclose={closeFind} />
+<div class="pane">
+  <div class="topbar">
+    <span class="repo-root" title={tab.info.root}>{tab.info.root}</span>
+    <span class="row-count">{tab.view.total.toLocaleString()} rows</span>
+    {#if isFiltered(tab.info.filter)}
+      <span class="filter-chip" title="Showing only these commits">
+        <span class="filter-text">{describeFilter(tab.info.filter)}</span>
+        <button
+          class="icon-button"
+          aria-label="Show all commits"
+          title="Show all commits"
+          onclick={() => applyFilter({ refs: [], path: null })}>×</button
+        >
+      </span>
+    {/if}
+    <button
+      class="button"
+      class:active={isFiltered(tab.info.filter)}
+      aria-expanded={tab.filterOpen}
+      onclick={() => (tab.filterOpen = !tab.filterOpen)}
+      title="Show only some branches, or commits changing a path"
+    >
+      Filter…
+    </button>
+    <button class="button" onclick={() => void openFind()} title="Find commits (Ctrl+F, /)">Find</button>
+    <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
+      <input type="checkbox" bind:checked={settings.showRelations} />
+      Relationships
+    </label>
+    <button
+      class="button"
+      onclick={() => void perform(tab, { kind: "fetch", remote: null })}
+      title="Fetch every remote, removing remote branches that were deleted there"
+    >
+      Fetch
+    </button>
+    <button
+      class="button"
+      onclick={() => void perform(tab, { kind: "undo" })}
+      title="Undo the last operation made here from FerGit, after saying what it restores (u)"
+    >
+      Undo
+    </button>
+    <button class="button" onclick={() => tab.refresh()} disabled={tab.refreshing} title="Re-read the repository">
+      Refresh
+    </button>
+  </div>
+  <StateBanner
+    repoState={tab.info.state}
+    busy={tab.operations.active.length > 0}
+    onaction={(kind) => void perform(tab, { kind })}
+  />
+  <OperationStatus operations={tab.operations} />
+
+  <div class="content">
+    <div class="workspace">
+      <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
+      <div class="graph-layer" inert={tab.inspector.diff !== null}>
+        <GraphView
+          bind:this={graphView}
+          view={tab.view}
+          highlight={tab.finder.open ? tab.finder : undefined}
+          onactivate={() => (tab.detailsOpen = true)}
+          onmenu={openMenu}
+        />
+        {#if tab.finder.open}
+          <FindBar bind:this={findBar} finder={tab.finder} onclose={closeFind} />
+        {/if}
+      </div>
+      {#if tab.inspector.diff}
+        <div class="diff-layer">
+          {#key tab.inspector.diff.request}
+            <DiffView bind:this={diffView} diff={tab.inspector.diff} onclose={closeDiff} />
+          {/key}
+        </div>
       {/if}
     </div>
-    {#if tab.inspector.diff}
-      <div class="diff-layer">
-        {#key tab.inspector.diff.request}
-          <DiffView bind:this={diffView} diff={tab.inspector.diff} onclose={closeDiff} />
-        {/key}
-      </div>
+    {#if tab.detailsOpen && tab.view.selected !== null}
+      <DetailsPanel
+        bind:this={detailsPanel}
+        view={tab.view}
+        inspector={tab.inspector}
+        onopen={openFile}
+        onclose={() => (tab.detailsOpen = false)}
+      />
+    {/if}
+    {#if tab.filterOpen}
+      <FilterPanel
+        current={tab.info.filter}
+        loadRefs={() => tab.client.refs()}
+        onapply={applyFilter}
+        onclose={() => (tab.filterOpen = false)}
+      />
     {/if}
   </div>
-  {#if tab.detailsOpen && tab.view.selected !== null}
-    <DetailsPanel
-      bind:this={detailsPanel}
-      view={tab.view}
-      inspector={tab.inspector}
-      onopen={openFile}
-      onclose={() => (tab.detailsOpen = false)}
-    />
-  {/if}
-  {#if tab.filterOpen}
-    <FilterPanel
-      current={tab.info.filter}
-      loadRefs={() => tab.client.refs()}
-      onapply={applyFilter}
-      onclose={() => (tab.filterOpen = false)}
-    />
-  {/if}
   {#if menu}
     <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onpick={(action) => void perform(tab, action)} onclose={closeMenu} />
   {/if}
 </div>
 
 <style>
-  /* Panes are stacked; the hidden ones keep their layout (and so their scroll positions). */
+  /* Fills the area the app gives the tab's group. */
   .pane {
     position: absolute;
     inset: 0;
     display: flex;
+    flex-direction: column;
   }
 
-  .pane.hidden {
-    visibility: hidden;
+  /* In a narrow pane the buttons wrap onto a second line, leaving the path room to be read. */
+  .topbar {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    min-height: 36px;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .repo-root {
+    flex: 1 1 140px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-muted);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .toggle {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 5px;
+    color: var(--fg-muted);
+    font-size: 12px;
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .toggle input {
+    margin: 0;
+    accent-color: var(--primary-bg);
+  }
+
+  .row-count {
+    flex: none;
+    color: var(--fg-subtle);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .button.active {
+    border-color: var(--focus);
+    color: var(--focus);
+  }
+
+  .filter-chip {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 280px;
+    padding: 0 0 0 8px;
+    border: 1px solid var(--focus);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--focus) 10%, transparent);
+    color: var(--fg);
+    font-size: 12px;
+  }
+
+  .filter-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filter-chip .icon-button {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    font-size: 14px;
+  }
+
+  /* What the filter picker is placed in. */
+  .content {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
   }
 
   .workspace {
