@@ -88,4 +88,12 @@ describe("saved tabs", () => {
     expect(parseTabs('{"paths":["/a","/b"],"active":0.5}')).toEqual({ paths: ["/a", "/b"], active: 0 });
     expect(parseTabs('{"paths":["/a"]}')).toEqual({ paths: ["/a"], active: 0 });
   });
+
+  it("reads back a layout, and drops one that is unreadable or whose indexes moved", () => {
+    const layout = { axis: "row", sizes: [0.5, 0.5], children: [{ tabs: [0], shown: 0 }, { tabs: [1], shown: 1 }] };
+    const stored = (paths: unknown[], saved: unknown) => JSON.stringify({ paths, active: 1, layout: saved });
+    expect(parseTabs(stored(["/a", "/b"], layout))).toEqual({ paths: ["/a", "/b"], active: 1, layout });
+    expect(parseTabs(stored(["/a", "/b"], { axis: "row" }))).toEqual({ paths: ["/a", "/b"], active: 1 });
+    expect(parseTabs(stored(["/a", 3, "/b"], layout))).toEqual({ paths: ["/a", "/b"], active: 1 });
+  });
 });

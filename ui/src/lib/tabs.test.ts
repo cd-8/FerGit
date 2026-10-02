@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RepoInfo } from "./bindings";
 import type { RepoClient } from "./client";
+import { groups } from "./layout";
 import type { SavedTabs } from "./settings.svelte";
 import { Tabs, type TabsBackend, type TabsMemory } from "./tabs.svelte";
 
@@ -170,6 +171,117 @@ describe("Tabs: switching and closing", () => {
     const again = await tabs.open("/a");
     expect(again).not.toBe(a);
     expect(roots(tabs)).toEqual(["/b", "/c", "/a"]);
+  });
+});
+
+describe("Tabs: groups", () => {
+  /** /a and /b in one group with /c, active, in a group to their right. */
+  async function split() {
+    const fake = fakeBackend(["/a", "/b", "/c", "/d"]);
+    const saved = memory();
+    const tabs = new Tabs(fake.backend, saved);
+    const [a, b, c] = [await tabs.open("/a"), await tabs.open("/b"), await tabs.open("/c")];
+    tabs.move(c, { group: groups(tabs.layout)[0].id, zone: "right" });
+    return { ...fake, saved, tabs, a, b, c };
+  }
+
+  const groupRoots = (tabs: Tabs) => groups(tabs.layout).map((group) => group.tabs.map((tab) => tab.info.root));
+  const shownRoots = (tabs: Tabs) => tabs.shown.map((tab) => tab.info.root);
+
+  it("splits the window when a tab moves beside a group, and activates the tab", async () => {
+    const { tabs, a, c } = await split();
+    expect(groupRoots(tabs)).toEqual([["/a", "/b"], ["/c"]]);
+    expect(shownRoots(tabs)).toEqual(["/b", "/c"]);
+    expect(tabs.active).toBe(c);
+    expect(roots(tabs)).toEqual(["/a", "/b", "/c"]);
+
+    tabs.move(a, { group: groups(tabs.layout)[1].id, zone: "center", index: 0 });
+    expect(groupRoots(tabs)).toEqual([["/b"], ["/a", "/c"]]);
+    expect(tabs.active).toBe(a);
+  });
+
+  it("shows an activated tab in its own group, leaving the other groups as they are", async () => {
+    const { tabs, a } = await split();
+    tabs.activate(a);
+    expect(shownRoots(tabs)).toEqual(["/a", "/c"]);
+    expect(tabs.active).toBe(a);
+  });
+
+  it("opens a repository in the active tab's group", async () => {
+    const { tabs, a } = await split();
+    tabs.activate(a);
+    const d = await tabs.open("/d");
+    expect(groupRoots(tabs)).toEqual([["/a", "/b", "/d"], ["/c"]]);
+    expect(tabs.active).toBe(d);
+  });
+
+  it("cycles from one group to the next in reading order", async () => {
+    const { tabs, a, b, c } = await split();
+    tabs.cycle(1);
+    expect(tabs.active).toBe(a);
+    tabs.cycle(-1);
+    expect(tabs.active).toBe(c);
+    tabs.cycle(-1);
+    expect(tabs.active).toBe(b);
+  });
+
+  it("removes a group with its last tab, activating the tab shown where it was", async () => {
+    const { tabs, a, b, c } = await split();
+    await tabs.close(c);
+    expect(groupRoots(tabs)).toEqual([["/a", "/b"]]);
+    expect(tabs.active).toBe(b);
+
+    tabs.move(a, { group: groups(tabs.layout)[0].id, zone: "left" });
+    tabs.activate(b);
+    await tabs.close(a);
+    expect(groupRoots(tabs)).toEqual([["/b"]]);
+    expect(tabs.active).toBe(b);
+  });
+
+  it("remembers the layout while the window is split, and resizes it", async () => {
+    const { tabs, saved, c } = await split();
+    const halves = [{ tabs: [0, 1], shown: 1 }, { tabs: [2], shown: 2 }];
+    expect(saved.tabs).toEqual({
+      paths: ["/a", "/b", "/c"],
+      active: 2,
+      layout: { axis: "row", sizes: [0.5, 0.5], children: halves },
+    });
+
+    tabs.resize(tabs.layout!.id, 0, 0.25, 0.1);
+    expect(saved.tabs.layout).toEqual({ axis: "row", sizes: [0.25, 0.75], children: halves });
+
+    tabs.move(c, { group: groups(tabs.layout)[0].id, zone: "center" });
+    expect(saved.tabs).toEqual({ paths: ["/a", "/b", "/c"], active: 2 });
+  });
+
+  it("restores the remembered layout, without the repositories that no longer open", async () => {
+    const { saved } = await split();
+    const { backend } = fakeBackend(["/a", "/b", "/c"]);
+    const again = new Tabs(backend, memory(saved.tabs));
+    await again.restore();
+    expect(groupRoots(again)).toEqual([["/a", "/b"], ["/c"]]);
+    expect(shownRoots(again)).toEqual(["/b", "/c"]);
+    expect(again.active?.info.root).toBe("/c");
+
+    const fewer = memory(saved.tabs);
+    const partly = new Tabs(fakeBackend(["/a", "/c"]).backend, fewer);
+    await expect(partly.restore()).rejects.toMatchObject({ kind: "notARepository" });
+    expect(groupRoots(partly)).toEqual([["/a"], ["/c"]]);
+    expect(fewer.tabs).toEqual({
+      paths: ["/a", "/c"],
+      active: 1,
+      layout: { axis: "row", sizes: [0.5, 0.5], children: [{ tabs: [0], shown: 0 }, { tabs: [1], shown: 1 }] },
+    });
+  });
+
+  it("puts a tab opened while restoring ahead of the restored ones, in the first group", async () => {
+    const { saved } = await split();
+    const tabs = new Tabs(fakeBackend(["/a", "/b", "/c", "/d"]).backend, memory(saved.tabs));
+    const restoring = tabs.restore();
+    const d = await tabs.open("/d");
+    await restoring;
+    expect(groupRoots(tabs)).toEqual([["/d", "/a", "/b"], ["/c"]]);
+    expect(tabs.active).toBe(d);
   });
 });
 
