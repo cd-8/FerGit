@@ -132,16 +132,17 @@
 </form>
 
 <style>
+  /* Placed in its tab's pane, under the toolbar. */
   .filter-panel {
-    position: fixed;
-    top: 76px;
+    position: absolute;
+    top: 4px;
     right: 10px;
     z-index: 15;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: min(340px, calc(100vw - 20px));
-    max-height: calc(100vh - 60px);
+    width: min(340px, calc(100% - 20px));
+    max-height: calc(100% - 14px);
     margin: 0;
     padding: 0 12px 12px;
     border: 1px solid var(--border-strong);

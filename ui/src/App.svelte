@@ -5,15 +5,15 @@
   import { followCredentialPrompts, perform } from "./lib/actions";
   import Dialog from "./lib/Dialog.svelte";
   import { dialogs } from "./lib/dialogs.svelte";
-  import { describeFilter, isFiltered } from "./lib/filter";
   import KeyHelp from "./lib/KeyHelp.svelte";
   import { KeyInterpreter, PENDING_G_TIMEOUT_MS, type Command, type KeyContext } from "./lib/keys";
-  import OperationStatus from "./lib/OperationStatus.svelte";
+  import { arrange, dropZone, groupOf, topRight, zoneArea, type Group, type Sash } from "./lib/layout";
   import { session } from "./lib/session.svelte";
-  import StateBanner from "./lib/StateBanner.svelte";
+  import { TabDrag, type Drop } from "./lib/tabDrag.svelte";
   import TabPane from "./lib/TabPane.svelte";
+  import TabStrip from "./lib/TabStrip.svelte";
   import type { Tab } from "./lib/tabs.svelte";
-  import { settings, theme } from "./lib/settings.svelte";
+  import { theme } from "./lib/settings.svelte";
   import { applyTheme, nextThemeMode, type ThemeMode } from "./lib/theme.svelte";
 
   const tabs = session.tabs;
@@ -21,8 +21,69 @@
   const panes: Record<number, ReturnType<typeof TabPane> | undefined> = $state({});
   const activePane = $derived(tabs.active ? panes[tabs.active.session] : undefined);
 
+  // The window: each group's tab strip over the pane of the tab it shows, and between neighboring
+  // groups a boundary to drag. All of it is placed by the layout's arrangement, in shares of the
+  // window, so nothing is ever mounted again because the layout changed.
+  /** The least a boundary being dragged leaves the groups on either side of it, across it. */
+  const MIN_GROUP_PX = 200;
+  let main = $state<HTMLElement>();
+  const arrangement = $derived(arrange(tabs.layout));
+  /** The group whose strip holds the window's own buttons. */
+  const corner = $derived(tabs.layout && topRight(tabs.layout));
+  /**
+   * Every tab with its group and the group's area. In session order whatever the layout: a pane
+   * moved to another place in the page would lose its scroll positions.
+   */
+  const slots = $derived(
+    arrangement.groups
+      .flatMap(({ group, rect }) => group.tabs.map((tab) => ({ tab, group, rect })))
+      .sort((a, b) => a.tab.session - b.tab.session),
+  );
+  const percent = (share: number): string => `${share * 100}%`;
+
+  const drag = new TabDrag(dropAt, (tab, target) => {
+    tabs.move(tab, target);
+    void focusActive();
+  });
+
+  /**
+   * Where `tab` would land if dropped at a point of the window. Over a tab strip: among its tabs,
+   * before the first whose middle is past the point. Over a pane: beside its group or into it.
+   */
+  function dropAt(tab: Tab, x: number, y: number): Drop | null {
+    const under = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-group]");
+    if (!under) return null;
+    const group = Number(under.dataset.group);
+    const box = under.getBoundingClientRect();
+    if (under.classList.contains("strip")) {
+      const others = [...under.querySelectorAll<HTMLElement>("[data-tab]")]
+        .filter((other) => Number(other.dataset.tab) !== tab.session)
+        .map((other) => other.getBoundingClientRect());
+      const index = others.filter((other) => other.left + other.width / 2 < x).length;
+      const edge = index < others.length ? others[index].left : (others.at(-1)?.right ?? box.left);
+      const line = { x: Math.max(edge - 1, box.left), y: box.top, width: 2, height: box.height };
+      return { target: { group, zone: "center", index }, area: line };
+    }
+    // A group's only tab has nothing to go beside in its own group.
+    const from = groupOf(tabs.layout, tab);
+    const alone = from?.id === group && from.tabs.length === 1;
+    const zone = alone ? "center" : dropZone((x - box.left) / box.width, (y - box.top) / box.height);
+    return { target: { group, zone }, area: zoneArea(zone, box) };
+  }
+
+  /** Moves the boundary being dragged to the pointer. */
+  function dragSash(sash: Sash, event: PointerEvent): void {
+    if (!main) return;
+    const box = main.getBoundingClientRect();
+    const [pointer, start, length] =
+      sash.axis === "row"
+        ? [event.clientX, box.left + sash.rect.x * box.width, sash.rect.width * box.width]
+        : [event.clientY, box.top + sash.rect.y * box.height, sash.rect.height * box.height];
+    tabs.resize(sash.split, sash.index, (pointer - start) / length, MIN_GROUP_PX / length);
+  }
+
   // Keyboard: every shortcut goes through here. The interpreter turns presses into commands; `run`
-  // carries each one out, in the pane of the tab in front when it belongs to a pane.
+  // carries each one out, in the pane of the active tab when it belongs to a pane.
   const keys = new KeyInterpreter();
   /** The half-typed sequence (a count, a `g`), shown like vim's showcmd. */
   let pendingKeys = $state("");
@@ -31,6 +92,11 @@
 
   function onkeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented) return;
+    if (drag.current && event.key === "Escape") {
+      drag.cancel();
+      event.preventDefault();
+      return;
+    }
     const context = keyContext(event.target);
     const result = keys.press(
       {
@@ -113,7 +179,7 @@
     }
   }
 
-  /** Moves focus into the tab in front, so its keys work straight away. */
+  /** Moves focus into the active tab, so its keys work straight away. */
   async function focusActive(): Promise<void> {
     await tick();
     activePane?.focus();
@@ -137,19 +203,13 @@
     return tab;
   }
 
-  async function chooseRepository(): Promise<void> {
+  /** Asks for a repository and opens it in `group`, or in the active tab's group. */
+  async function chooseRepository(group?: Group<Tab>): Promise<void> {
+    if (group) tabs.activate(group.shown);
     const path = await open({ directory: true, title: "Open repository" });
     if (typeof path === "string") await openRepository(path);
   }
 
-  /** Middle-click closes a tab; stopping the press keeps the browser from starting autoscroll. */
-  function onTabMouseDown(event: MouseEvent): void {
-    if (event.button === 1) event.preventDefault();
-  }
-
-  function onTabAuxClick(event: MouseEvent, tab: Tab): void {
-    if (event.button === 1) void closeTab(tab);
-  }
   /** How the theme button shows each mode. */
   const THEME_LABELS: Record<ThemeMode, { icon: string; name: string }> = {
     system: { icon: "◐", name: "System" },
@@ -196,102 +256,22 @@
 
 <svelte:window onfocus={() => session.refreshSoon()} {onkeydown} />
 
-<div class="app">
-  <header class="tabstrip">
-    <div class="tabs" role="tablist" aria-label="Open repositories">
-      {#each tabs.all as tab (tab.session)}
-        <div class="tab" class:active={tab === tabs.active}>
-          <button
-            class="tab-label"
-            role="tab"
-            aria-selected={tab === tabs.active}
-            title={tab.info.root}
-            onclick={() => showTab(tab)}
-            onmousedown={onTabMouseDown}
-            onauxclick={(event) => onTabAuxClick(event, tab)}
-          >
-            {tab.info.name}
-          </button>
-          <button
-            class="icon-button tab-close"
-            aria-label="Close {tab.info.name}"
-            title="Close (Ctrl+W)"
-            onclick={() => closeTab(tab)}>×</button
-          >
-        </div>
-      {/each}
-    </div>
-    <button
-      class="icon-button"
-      aria-label="Open repository in a new tab"
-      title="Open repository (Ctrl+T)"
-      onclick={chooseRepository}>+</button
-    >
-    <span class="spacer"></span>
-    <button
-      class="icon-button theme-button"
-      aria-label="Theme: {themeLabel.name}"
-      title="Theme: {themeLabel.name}. Switch to {nextThemeLabel.name} (T)"
-      onclick={() => theme.cycle()}>{themeLabel.icon}</button
-    >
-    <button
-      class="icon-button keys-button"
-      aria-label="Keyboard shortcuts"
-      title="Keyboard shortcuts (?)"
-      onclick={() => (helpOpen = !helpOpen)}>?</button
-    >
-  </header>
+{#snippet windowButtons()}
+  <button
+    class="icon-button theme-button"
+    aria-label="Theme: {themeLabel.name}"
+    title="Theme: {themeLabel.name}. Switch to {nextThemeLabel.name} (T)"
+    onclick={() => theme.cycle()}>{themeLabel.icon}</button
+  >
+  <button
+    class="icon-button keys-button"
+    aria-label="Keyboard shortcuts"
+    title="Keyboard shortcuts (?)"
+    onclick={() => (helpOpen = !helpOpen)}>?</button
+  >
+{/snippet}
 
-  {#if tabs.active}
-    {@const tab = tabs.active}
-    <div class="topbar">
-      <span class="repo-root" title={tab.info.root}>{tab.info.root}</span>
-      <span class="row-count">{tab.view.total.toLocaleString()} rows</span>
-      {#if isFiltered(tab.info.filter)}
-        <span class="filter-chip" title="Showing only these commits">
-          <span class="filter-text">{describeFilter(tab.info.filter)}</span>
-          <button
-            class="icon-button"
-            aria-label="Show all commits"
-            title="Show all commits"
-            onclick={() => activePane?.applyFilter({ refs: [], path: null })}>×</button
-          >
-        </span>
-      {/if}
-      <button
-        class="button"
-        class:active={isFiltered(tab.info.filter)}
-        aria-expanded={tab.filterOpen}
-        onclick={() => (tab.filterOpen = !tab.filterOpen)}
-        title="Show only some branches, or commits changing a path"
-      >
-        Filter…
-      </button>
-      <button class="button" onclick={() => void activePane?.openFind()} title="Find commits (Ctrl+F, /)">Find</button>
-      <label class="toggle" title="Label where branches split and join on the graph (names are inferred)">
-        <input type="checkbox" bind:checked={settings.showRelations} />
-        Relationships
-      </label>
-      <button
-        class="button"
-        onclick={() => void perform(tab, { kind: "fetch", remote: null })}
-        title="Fetch every remote, removing remote branches that were deleted there"
-      >
-        Fetch
-      </button>
-      <button
-        class="button"
-        onclick={() => void perform(tab, { kind: "undo" })}
-        title="Undo the last operation made here from FerGit, after saying what it restores (u)"
-      >
-        Undo
-      </button>
-      <button class="button" onclick={() => tab.refresh()} disabled={tab.refreshing} title="Re-read the repository">
-        Refresh
-      </button>
-    </div>
-  {/if}
-
+<div class="app" class:dragging={drag.current !== null}>
   {#if session.error}
     <div class="banner" role="alert">
       <span class="banner-message">{session.error}</span>
@@ -304,33 +284,112 @@
     </div>
   {/if}
 
-  {#if tabs.active}
-    {@const tab = tabs.active}
-    <StateBanner
-      repoState={tab.info.state}
-      busy={tab.operations.active.length > 0}
-      onaction={(kind) => void perform(tab, { kind })}
-    />
-    <OperationStatus operations={tab.operations} />
-  {/if}
-
-  <main class="main">
-    {#each tabs.all as tab (tab.session)}
-      <TabPane bind:this={panes[tab.session]} {tab} active={tab === tabs.active} />
+  <main class="main" bind:this={main}>
+    {#each arrangement.groups as { group, rect } (group.id)}
+      <div
+        class="strip"
+        class:inner-left={rect.x > 0}
+        class:inner-top={rect.y > 0}
+        data-group={group.id}
+        style:left={percent(rect.x)}
+        style:top={percent(rect.y)}
+        style:width={percent(rect.width)}
+      >
+        <TabStrip
+          tabs={group.tabs}
+          shown={group.shown}
+          focused={group.shown === tabs.active}
+          onshow={showTab}
+          onclose={(tab) => void closeTab(tab)}
+          onopen={() => void chooseRepository(group)}
+          onpress={(tab, event) => drag.press(tab, event)}
+          end={group.id === corner?.id ? windowButtons : undefined}
+        />
+      </div>
     {/each}
-    {#if tabs.all.length === 0}
+
+    {#each slots as { tab, group, rect } (tab.session)}
+      {@const shown = tab === group.shown}
+      <!-- A press or focus anywhere in a pane makes its tab the one the keyboard works on. The
+           panel itself takes no focus: what is in it does. -->
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div
+        class="slot"
+        class:hidden={!shown}
+        class:inner-left={rect.x > 0}
+        role="tabpanel"
+        aria-label={tab.info.name}
+        inert={!shown}
+        data-group={group.id}
+        style:left={percent(rect.x)}
+        style:top="calc({percent(rect.y)} + var(--strip-height))"
+        style:width={percent(rect.width)}
+        style:height="calc({percent(rect.height)} - var(--strip-height))"
+        onpointerdown={() => tabs.activate(tab)}
+        onfocusin={() => tabs.activate(tab)}
+      >
+        <TabPane bind:this={panes[tab.session]} {tab} {shown} />
+      </div>
+    {/each}
+
+    {#each arrangement.sashes as sash (`${sash.split}:${sash.index}`)}
+      <div
+        class="sash {sash.axis}"
+        role="separator"
+        aria-orientation={sash.axis === "row" ? "vertical" : "horizontal"}
+        style:left={percent(sash.rect.x + (sash.axis === "row" ? sash.at * sash.rect.width : 0))}
+        style:top={percent(sash.rect.y + (sash.axis === "column" ? sash.at * sash.rect.height : 0))}
+        style:width={sash.axis === "column" ? percent(sash.rect.width) : undefined}
+        style:height={sash.axis === "row" ? percent(sash.rect.height) : undefined}
+        onpointerdown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onpointermove={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) dragSash(sash, event);
+        }}
+      ></div>
+    {/each}
+
+    {#if !tabs.layout}
+      <div class="strip" style:left="0" style:top="0" style:width="100%">
+        <TabStrip
+          tabs={[]}
+          shown={null}
+          focused
+          onshow={showTab}
+          onclose={(tab) => void closeTab(tab)}
+          onopen={() => void chooseRepository()}
+          onpress={(tab, event) => drag.press(tab, event)}
+          end={windowButtons}
+        />
+      </div>
       <div class="empty">
         {#if tabs.restoring}
           <p>Opening repositories…</p>
         {:else}
           <h1>No repository open</h1>
           <p>Open a folder that contains a git repository to browse its history.</p>
-          <button class="button primary" onclick={chooseRepository}>Open repository…</button>
+          <button class="button primary" onclick={() => void chooseRepository()}>Open repository…</button>
         {/if}
       </div>
     {/if}
   </main>
 
+  {#if drag.current}
+    {@const { tab, x, y, drop } = drag.current}
+    {#if drop}
+      <div
+        class="drop-area"
+        style:left="{drop.area.x}px"
+        style:top="{drop.area.y}px"
+        style:width="{drop.area.width}px"
+        style:height="{drop.area.height}px"
+      ></div>
+    {/if}
+    <div class="drag-label" style:left="{x + 12}px" style:top="{y + 14}px">{tab.info.name}</div>
+  {/if}
   {#if pendingKeys}
     <div class="pending-keys" aria-live="polite" title="Keys typed so far">{pendingKeys}</div>
   {/if}
@@ -351,162 +410,16 @@
     height: 100%;
   }
 
-  .tabstrip {
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: 4px;
-    height: 36px;
-    padding: 0 8px 0 0;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-subtle);
-  }
-
-  .tabs {
-    display: flex;
-    align-self: stretch;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .tab {
-    display: flex;
-    flex: 0 1 auto;
-    align-items: center;
-    min-width: 72px;
-    max-width: 220px;
-    padding-right: 4px;
-    border-right: 1px solid var(--border);
-    color: var(--fg-muted);
-  }
-
-  .tab:hover {
-    background: var(--bg-hover);
-  }
-
-  /* The tab in front joins the content below it. */
-  .tab.active {
-    margin-bottom: -1px;
-    background: var(--bg);
-    color: var(--fg);
-    box-shadow: inset 0 2px 0 var(--primary-bg);
-  }
-
-  .tab-label {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    padding: 0 6px 0 12px;
-    overflow: hidden;
-    border: 0;
-    background: transparent;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: default;
-  }
-
-  .tab.active .tab-label {
-    font-weight: 600;
-  }
-
-  .tab-close {
-    flex: none;
-    width: 20px;
-    height: 20px;
-    font-size: 14px;
-  }
-
-  /* Only the tab in front and the one under the mouse show their close button. */
-  .tab:not(.active):not(:hover) .tab-close:not(:focus-visible) {
-    visibility: hidden;
-  }
-
-  .spacer {
-    flex: 1;
-  }
-
-  .topbar {
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: 10px;
-    height: 36px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .repo-root {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--fg-muted);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .toggle {
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: 5px;
-    color: var(--fg-muted);
-    font-size: 12px;
-    white-space: nowrap;
+  .app.dragging {
     user-select: none;
   }
 
-  .toggle input {
-    margin: 0;
-    accent-color: var(--primary-bg);
-  }
-
-  .row-count {
-    flex: none;
-    color: var(--fg-subtle);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .button.active {
-    border-color: var(--focus);
-    color: var(--focus);
-  }
-
-  .filter-chip {
-    display: flex;
-    flex: 0 1 auto;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    max-width: 280px;
-    padding: 0 0 0 8px;
-    border: 1px solid var(--focus);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--focus) 10%, transparent);
-    color: var(--fg);
-    font-size: 12px;
-  }
-
-  .filter-text {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .filter-chip .icon-button {
-    width: 20px;
-    height: 20px;
-    border-radius: 10px;
-    font-size: 14px;
+  .app.dragging :global(*) {
+    cursor: grabbing !important;
   }
 
   .theme-button {
     flex: none;
-    margin-left: auto;
     font-size: 14px;
   }
 
@@ -558,17 +471,104 @@
     color: inherit;
   }
 
-  /* Holds the stacked tab panes. */
+  /* Holds the groups: for each its tab strip, and under it the panes of its tabs, stacked. */
   .main {
+    --strip-height: 36px;
     position: relative;
-    display: flex;
     flex: 1;
     min-height: 0;
   }
 
+  .strip {
+    position: absolute;
+    height: var(--strip-height);
+  }
+
+  /* Panes are stacked; the hidden ones keep their layout (and so their scroll positions). */
+  .slot {
+    position: absolute;
+  }
+
+  .slot.hidden {
+    visibility: hidden;
+  }
+
+  /* A group that isn't at the window's edge is ruled off from its neighbor. */
+  .inner-left {
+    border-left: 1px solid var(--border);
+  }
+
+  .inner-top {
+    border-top: 1px solid var(--border);
+  }
+
+  /* A boundary between groups: a strip to grab, wider than the line it lights up when pointed at. */
+  .sash {
+    position: absolute;
+    z-index: 5;
+    touch-action: none;
+  }
+
+  .sash.row {
+    width: 7px;
+    margin-left: -3px;
+    cursor: col-resize;
+  }
+
+  .sash.column {
+    height: 7px;
+    margin-top: -3px;
+    cursor: row-resize;
+  }
+
+  .sash::after {
+    position: absolute;
+    inset: 0 2px;
+    background: var(--focus);
+    content: "";
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+
+  .sash.column::after {
+    inset: 2px 0;
+  }
+
+  .sash:hover::after,
+  .sash:active::after {
+    opacity: 1;
+    transition-delay: 0.15s;
+  }
+
+  /* Where the tab being dragged would land. */
+  .drop-area {
+    position: fixed;
+    z-index: 25;
+    border: 1px solid var(--focus);
+    background: color-mix(in srgb, var(--focus) 16%, transparent);
+    pointer-events: none;
+  }
+
+  .drag-label {
+    position: fixed;
+    z-index: 26;
+    max-width: 220px;
+    padding: 3px 10px;
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--bg);
+    box-shadow: 0 4px 14px var(--shadow);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
   .empty {
+    position: absolute;
+    inset: var(--strip-height) 0 0;
     display: flex;
-    flex: 1;
     flex-direction: column;
     align-items: center;
     justify-content: center;

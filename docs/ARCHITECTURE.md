@@ -180,6 +180,7 @@ event repo_changed { repo, generation, row_count }
 ```
 
 - **`repo` is a session id, one per tab.** The backend keeps a registry of open sessions, each with its own snapshot and file watcher. A repository is open at most once: opening it again, by any path inside it, returns its existing session, and the UI brings that tab to the front. Ids are never reused, so a late request or event for a closed tab can't reach another one.
+- **Tabs side by side are the UI's business.** The window can be split into panes by dragging a tab to a side of one. The UI keeps this as a tree of splits and tab groups (`ui/src/lib/layout.ts`), each group showing one of its tabs, and saves it with the list of open tabs. The backend still sees one session per tab, whichever are on screen.
 - **Find and filter work on the snapshot, in Rust.** `search` reads the commits of the rows shown and answers with row numbers of one generation (the first 10 000, plus a count), so commit data never goes to the UI in bulk. A filter (branches to show, a path the commits must change) is part of the snapshot: setting one builds a new snapshot from the same history, with each shown commit's parents rewritten to its nearest shown ancestors (`fergit_graph::Subgraph`) before layout, so the graph stays connected. Refreshes keep the filter. It was first planned as a streamed `Channel<Hit>`; a single answer is simpler, and streaming stays an option if measurements on large repositories call for it.
 - **One diff mechanism.** `DiffSpec { from: Side, to: Side, paths }`, with `Side = Commit(oid) | Index | WorkTree`, covers the commit view, comparing two commits, uncommitted changes and stashes (APOSD ch6).
 - **Generate the TypeScript types** from Rust with `tauri-specta`. The schema is defined once, so a hand-written `types.ts` can't drift from the Rust structs (APOSD ch5).
@@ -278,7 +279,7 @@ event repo_changed { repo, generation, row_count }
 2. **Read-only viewer.** Open a repo; graph, ref labels, working-tree row, commit details, diffs, refresh when files change, scroll position kept across refreshes.
 3. **Safe operations + journal.** Checkout, create/delete branches and tags, fetch/pull, push with lease, password prompt dialog.
 4. **History-changing operations.** Merge, rebase, cherry-pick, revert, reset, stash. Conflicts as a normal state; undo from the journal.
-5. **Git Graph feature parity.** Find, compare commits, branch filter, several repos in tabs, opt-in avatars, themes.
+5. **Git Graph feature parity.** Find, compare commits, branch filter, several repos in tabs and split panes, opt-in avatars, themes.
 6. **Hardening.**
    - Property tests and fuzzing for the layout.
    - Integration tests that *actually trigger* the failure paths: a push rejected by a local bare remote, forced conflicts, a held `index.lock`.

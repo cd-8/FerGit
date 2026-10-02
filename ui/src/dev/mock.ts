@@ -1,7 +1,8 @@
 // Dev-only: runs the real UI against a small fabricated repository, without the Rust backend, to
 // look at graph rendering (relationship labels, upstream badges) and at operations: pushes fail,
 // merges, rebases, cherry-picks and reverts stop with conflicts until continued or aborted, and undo
-// always offers to undo a reset. Served by `npm run dev` at
+// always offers to undo a reset. It opens that repository under three names, one tab each, to look
+// at tabs side by side in split panes. Served by `npm run dev` at
 // /mock.html; the production build doesn't include it.
 
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -159,22 +160,43 @@ const rows: Row[] = specs.map((spec, index) => ({
   relations: spec.relations ?? [],
 }));
 
-let info: RepoInfo = {
-  root: "C:\\mock\\relations-demo",
-  name: "relations-demo",
-  generation: 1,
-  rowCount: rows.length,
-  filter: { refs: [], path: null },
-  head: rows[0].id,
-  branch: "main",
-  state: { kind: "clean" },
-};
+/** The repositories opened at the start: the same history under each name, one tab each. */
+const ROOTS = ["C:\\mock\\relations-demo", "C:\\mock\\second-demo", "C:\\mock\\third-demo"];
+
+/** The open repositories, by session. Any folder opens as a repository of its own. */
+const repos = new Map<number, RepoInfo>();
+let lastSession = 0;
+
+function openRepo(root: string): { session: number; info: RepoInfo } {
+  for (const [session, info] of repos) {
+    if (info.root === root) return { session, info };
+  }
+  const info: RepoInfo = {
+    root,
+    name: root.split(/[\\/]/).pop() ?? root,
+    generation: 1,
+    rowCount: rows.length,
+    filter: { refs: [], path: null },
+    head: rows[0].id,
+    branch: "main",
+    state: { kind: "clean" },
+  };
+  const session = ++lastSession;
+  repos.set(session, info);
+  return { session, info };
+}
 
 mockIPC((command, payload) => {
   const args = (payload ?? {}) as Record<string, unknown>;
+  if (command === "open_repo") return openRepo(String(args.path));
+  if (command === "plugin:event|listen") return 1;
+  const session = Number(args.session);
+  const info = repos.get(session);
+  if (!info) return null;
   switch (command) {
-    case "open_repo":
-      return { session: 1, info };
+    case "close_repo":
+      repos.delete(session);
+      return null;
     case "refresh":
       return info;
     case "rows": {
@@ -202,19 +224,20 @@ mockIPC((command, payload) => {
     case "run_operation": {
       // Pushes are rejected, to show how failures look; everything else succeeds after a moment.
       const op = args.operation as Operation;
-      info = { ...info, state: nextState(op, info.state) };
+      const after = { ...info, state: nextState(op, info.state) };
+      repos.set(session, after);
       const outcome: OpOutcome =
         op.kind === "push"
           ? {
               kind: "failed",
-              info,
+              info: after,
               error: {
                 kind: "rejected",
                 message: `origin has commits on ${op.branch} that you don't have. Pull or fetch and integrate them first, or force-push with lease to replace them.`,
                 output: `To https://example.com/repo.git\n!\trefs/heads/${op.branch}:refs/heads/${op.branch}\t[rejected] (fetch first)\nDone`,
               },
             }
-          : { kind: "done", info };
+          : { kind: "done", info: after };
       return new Promise((resolve) => setTimeout(() => resolve(outcome), 800));
     }
     case "search": {
@@ -228,8 +251,6 @@ mockIPC((command, payload) => {
       return { ...info, filter: args.filter };
     case "refs":
       return rows.flatMap((row) => row.refs).filter((ref) => ref.kind !== "stash");
-    case "plugin:event|listen":
-      return 1;
     default:
       return null;
   }
@@ -267,4 +288,9 @@ window.addEventListener("unhandledrejection", (event) => {
 const target = document.getElementById("app");
 if (!target) throw new Error("FerGit mock: #app element missing");
 mount(App, { target });
-void session.tabs.open(info.root);
+// Unless the tabs of the previous visit are coming back, laid out as they were.
+if (session.tabs.all.length === 0 && !session.tabs.restoring) {
+  void (async () => {
+    for (const root of ROOTS) await session.tabs.open(root);
+  })();
+}

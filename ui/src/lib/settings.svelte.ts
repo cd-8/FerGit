@@ -1,3 +1,4 @@
+import { parseLayout, type SavedLayout } from "./layout";
 import { DARK_SCHEME_QUERY, THEME_STORAGE_KEY, ThemeState, parseThemeMode, type ThemeMode } from "./theme.svelte";
 
 /** Where settings persist: `localStorage` in the app, a stand-in in tests. */
@@ -12,6 +13,8 @@ export interface SavedTabs {
   paths: string[];
   /** Index into `paths` of the active tab; `null` when there are no tabs. */
   active: number | null;
+  /** How the window was split among the tabs, by index into `paths`. Absent when it wasn't split. */
+  layout?: SavedLayout;
 }
 
 const NO_TABS: SavedTabs = { paths: [], active: null };
@@ -68,6 +71,7 @@ export class Settings {
 /**
  * Reads saved tabs leniently: anything unreadable (a hand-edited or future format) means no tabs,
  * entries that aren't paths are skipped, and an out-of-range active index falls back to the first.
+ * A layout that is unreadable, or whose indexes moved because entries were skipped, is dropped.
  */
 export function parseTabs(stored: string | null): SavedTabs {
   if (stored === null) return NO_TABS;
@@ -84,7 +88,10 @@ export function parseTabs(stored: string | null): SavedTabs {
   if (paths.length === 0) return NO_TABS;
   const active = "active" in value ? value.active : null;
   const valid = typeof active === "number" && Number.isInteger(active) && active >= 0 && active < paths.length;
-  return { paths, active: valid ? active : 0 };
+  const tabs: SavedTabs = { paths, active: valid ? active : 0 };
+  const layout = "layout" in value && paths.length === value.paths.length ? parseLayout(value.layout) : null;
+  if (layout) tabs.layout = layout;
+  return tabs;
 }
 
 function read(storage: SettingsStorage | null, key: string): string | null {

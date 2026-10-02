@@ -62,7 +62,9 @@
       keys: [
         ["Ctrl+T", "Open a repository in a new tab"],
         ["Ctrl+W", "Close the tab (middle-click too)"],
-        ["Ctrl+Tab  Ctrl+Shift+Tab", "Next / previous tab"],
+        ["Ctrl+Tab  Ctrl+Shift+Tab", "Next / previous tab, through every pane in turn"],
+        ["Drag a tab", "To a side of a pane to put it beside it; onto a pane or its tabs to move it there"],
+        ["Drag a divider", "Resize the panes beside it"],
       ],
     },
     {

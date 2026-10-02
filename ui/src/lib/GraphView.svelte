@@ -233,7 +233,7 @@
     <span>Graph</span>
     <span>Description</span>
     <span class="author">Author</span>
-    <span>Date</span>
+    <span class="date">Date</span>
     <span>Commit</span>
   </div>
 
@@ -345,6 +345,16 @@
       --col-author: 0px;
     }
     .author {
+      visibility: hidden;
+    }
+  }
+
+  /* A pane beside others can be narrower still: the description needs the date's room more. */
+  @container (max-width: 480px) {
+    .columns {
+      --col-date: 0px;
+    }
+    .date {
       visibility: hidden;
     }
   }
