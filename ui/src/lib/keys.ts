@@ -86,7 +86,7 @@ const run = (command: Command): KeyResult => ({ command, handled: true });
  *
  * Tabs, everywhere (editable elements, the find bar and the help included), like a browser's:
  * Ctrl+T opens a repository in a new tab, Ctrl+W closes the tab, Ctrl+Tab and Ctrl+Shift+Tab switch
- * to the next and previous tab.
+ * to the next and previous tab, going through the tabs of every pane of a split window in turn.
  *
  * Keymap per context:
  * - graph: j/k and ↓/↑ move, gg/G/Home/End go to an end, {n}G/{n}gg to row n, Ctrl+d/u/b and
