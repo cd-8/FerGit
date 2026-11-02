@@ -58,6 +58,14 @@
       ],
     },
     {
+      title: "Pull requests",
+      keys: [
+        ["Click a line number", "Comment on that line of the open file"],
+        ["Ctrl+Enter", "Send the comment or reply being written"],
+        ["Esc", "Close the file's diff, else go back to the graph"],
+      ],
+    },
+    {
       title: "Tabs",
       keys: [
         ["Ctrl+T", "Open a repository in a new tab"],
