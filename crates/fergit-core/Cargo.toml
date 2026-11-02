@@ -12,6 +12,7 @@ specta = ["dep:specta", "dep:specta-typescript", "fergit-graph/specta"]
 fergit-graph.workspace = true
 gix.workspace = true
 notify-debouncer-mini.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
