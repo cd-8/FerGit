@@ -5,11 +5,13 @@
 //! knows about git or the graph belongs in fergit-core.
 
 mod operations;
+mod review;
 
 use std::path::Path;
 use std::sync::Arc;
 
 use fergit_core::repo::RepoError;
+use fergit_core::review::Reviews;
 use fergit_core::session::{Session, Sessions};
 use fergit_core::{
     CommitDetails, DiffSide, FileChange, FileDiff, Filter, Oid, RefLabel, RepoInfo, RowLocation, RowsPage, SearchResult,
@@ -71,10 +73,11 @@ pub struct OpenedRepo {
     info: RepoInfo,
 }
 
-/// App-wide state: the open sessions, one per tab.
+/// App-wide state: the open sessions, one per tab, and pull request review across them.
 #[derive(Default)]
 struct AppState {
     sessions: Arc<Sessions>,
+    reviews: Arc<Reviews>,
 }
 
 impl AppState {
@@ -233,6 +236,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             operations::run_operation,
             operations::answer_prompt,
             operations::undoable,
+            review::review_host,
+            review::pull_requests,
+            review::pull_request,
+            review::review,
         ])
         .events(collect_events![RepoChanged, operations::OpProgress, operations::CredentialPrompt])
         .error_handling(ErrorHandlingMode::Throw)

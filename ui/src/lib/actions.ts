@@ -382,6 +382,8 @@ export function describe(op: Operation): string {
       return `deleting tag ${op.name}`;
     case "fetch":
       return op.remote ? `the fetch from ${op.remote}` : "the fetch";
+    case "fetchPullRequest":
+      return `the fetch of pull request !${op.number}`;
     case "pull":
       return "the pull";
     case "push":

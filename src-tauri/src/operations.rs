@@ -75,6 +75,13 @@ impl Operations {
     }
 }
 
+impl Operations {
+    /// How git reaches the user for credentials: for anything else that runs git's helpers.
+    pub fn askpass(&self) -> Option<fergit_core::askpass::Askpass> {
+        self.context.askpass.clone()
+    }
+}
+
 /// Credential prompts waiting for the user's answer, by prompt id.
 struct Prompts {
     app: AppHandle,
