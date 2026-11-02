@@ -6,6 +6,7 @@
 //! and always follow `--end-of-options`, so a branch named `--upload-pack=…` can never become an
 //! option.
 
+mod credential;
 mod git;
 mod history;
 mod restore;
@@ -15,6 +16,8 @@ use std::path::Path;
 
 use gix::bstr::{BStr, ByteSlice};
 
+pub use self::credential::{Credential, CredentialError};
+pub(super) use self::credential::{credential_fill, credential_verdict};
 pub use self::restore::{HeadMove, RefMove, Restore, WorktreeMode};
 use self::git::{Git, Output};
 use super::upstream::current_config;

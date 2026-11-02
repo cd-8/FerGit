@@ -68,7 +68,7 @@ impl Git<'_> {
     pub fn run_with_input(&self, args: &[&str], input: &[u8], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
         let mut attempt = 0;
         loop {
-            let output = self.run_once(args, input, progress)?;
+            let output = self.run_once(args, input, progress, true)?;
             if output.success() || !holds_lock(&output.stderr) || attempt == LOCK_RETRIES {
                 return Ok(output);
             }
@@ -77,7 +77,20 @@ impl Git<'_> {
         }
     }
 
-    fn run_once(&self, args: &[&str], input: &[u8], progress: &mut dyn FnMut(&str)) -> std::io::Result<Output> {
+    /// Runs `git <args>` once with `input` on stdin, leaving stdout exactly as git printed it: for
+    /// `git credential`, whose output is a secret meant for FerGit alone and must not be altered.
+    /// Never show or store that output.
+    pub fn run_unscrubbed(&self, args: &[&str], input: &[u8]) -> std::io::Result<Output> {
+        self.run_once(args, input, &mut |_| {}, false)
+    }
+
+    fn run_once(
+        &self,
+        args: &[&str],
+        input: &[u8],
+        progress: &mut dyn FnMut(&str),
+        scrub_stdout: bool,
+    ) -> std::io::Result<Output> {
         let mut command = Command::new("git");
         command
             .current_dir(self.root)
@@ -136,7 +149,10 @@ impl Git<'_> {
         Ok(Output {
             code: status.code(),
             stderr: scrub(&stderr),
-            stdout: scrub(&String::from_utf8_lossy(&stdout)),
+            stdout: match scrub_stdout {
+                true => scrub(&String::from_utf8_lossy(&stdout)),
+                false => String::from_utf8_lossy(&stdout).into_owned(),
+            },
         })
     }
 }

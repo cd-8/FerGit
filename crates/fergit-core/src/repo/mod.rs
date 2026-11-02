@@ -36,7 +36,7 @@ pub use merges::MergeNames;
 pub use refs::RefValues;
 pub use table::CommitTable;
 pub use watch::RepoWatcher;
-pub use write::{HeadMove, OpFailure, RefMove, Restore, WorktreeMode};
+pub use write::{Credential, CredentialError, HeadMove, OpFailure, RefMove, Restore, WorktreeMode};
 
 use crate::askpass::Askpass;
 use crate::types::{CommitDetails, DiffSide, FileChange, FileDiff, Oid, Operation, RefLabel, RepoState};
@@ -194,6 +194,53 @@ impl Repo {
     pub fn path_changes(&self, commits: &CommitTable, rows: &[usize], path: &str) -> Result<Vec<PathChange>, RepoError> {
         paths::changes(&self.repo.to_thread_local(), commits, rows, path)
     }
+
+    /// The configured remotes that have a URL, in configuration order, as the configuration is on
+    /// disk now. Only parses the configuration; nothing is run or contacted.
+    pub fn remotes(&self) -> Result<Vec<Remote>, RepoError> {
+        let repo = self.repo.to_thread_local();
+        let config = upstream::current_config(&repo)?;
+        let mut remotes: Vec<Remote> = Vec::new();
+        for section in config.sections_by_name("remote").into_iter().flatten() {
+            let (Some(name), Some(url)) = (section.header().subsection_name(), section.value("url")) else {
+                continue;
+            };
+            let name = lossy(name);
+            // A remote can be spread over several sections; like git, the first URL is the one fetched.
+            if !remotes.iter().any(|remote| remote.name == name) {
+                remotes.push(Remote { name, url: lossy(&url) });
+            }
+        }
+        Ok(remotes)
+    }
+
+    /// Whether every object in `ids` is in the repository's object database.
+    pub fn has_objects(&self, ids: &[Oid]) -> bool {
+        let repo = self.repo.to_thread_local();
+        ids.iter().all(|id| repo.has_object(to_object_id(*id)))
+    }
+
+    /// Asks git's credential helpers (Git Credential Manager, a keychain, a store) for the user
+    /// name and password to use with `url`, as `git fetch` from that URL would. If no helper has
+    /// one, git asks through `askpass` (failing without it). Never stored by FerGit; pass the result
+    /// back with [`Repo::credential_worked`] once it is known whether the host took it.
+    pub fn credential(&self, url: &str, askpass: Option<&Askpass>) -> Result<Credential, CredentialError> {
+        write::credential_fill(&self.root, url, askpass)
+    }
+
+    /// Tells the credential helpers whether `credential` worked: they store one that did (one typed
+    /// into the prompt, say) and forget one the host refused, as git does after a fetch.
+    pub fn credential_worked(&self, credential: &Credential, worked: bool) {
+        write::credential_verdict(&self.root, credential, worked);
+    }
+}
+
+/// A configured remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    pub name: String,
+    /// The URL fetched from, as configured.
+    pub url: String,
 }
 
 /// How a commit relates to its parents at one path.
