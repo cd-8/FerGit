@@ -317,6 +317,38 @@ fn fetch_downloads_and_prunes() {
 }
 
 #[test]
+fn fetching_a_pull_request_brings_its_commits_from_its_branch_or_its_pull_request_ref() {
+    let fx = Fixture::new();
+    let (origin, clone) = cloned(&fx);
+    let author = clone_of(&fx, &origin, "author");
+    git(&author, &["switch", "--quiet", "--create", "feature"]);
+    let head = commit(&author, "b.txt", "b\n", "Feature", T0 + MINUTE);
+    git(&author, &["push", "--quiet", "origin", "feature"]);
+    let h = Harness::open(&fx, &clone);
+    let fetch = |branch: &str, head: Oid| Operation::FetchPullRequest {
+        remote: "origin".to_owned(),
+        number: 7,
+        branch: branch.to_owned(),
+        head,
+    };
+
+    assert_done(&h.run(fetch("feature", head)));
+    assert!(h.session.repo().has_objects(&[head]));
+    assert_eq!(rev_parse(&clone, "refs/remotes/origin/feature"), head, "the branch is fetched like any other");
+
+    // The branch is deleted, but the host keeps a merge ref for the pull request.
+    let later = commit(&author, "b.txt", "c\n", "More", T0 + 2 * MINUTE);
+    git(&author, &["push", "--quiet", "origin", "feature:refs/pull/7/merge"]);
+    git(&author, &["push", "--quiet", "origin", "--delete", "feature"]);
+    assert_done(&h.run(fetch("feature", later)));
+    assert!(h.session.repo().has_objects(&[later]));
+
+    let missing: Oid = "1234567890123456789012345678901234567890".parse().unwrap();
+    let error = failure(h.run(fetch("main", missing)));
+    assert!(error.message.contains("pull request !7"), "{}", error.message);
+}
+
+#[test]
 fn pull_fast_forwards_but_refuses_to_merge_diverged_history() {
     let fx = Fixture::new();
     let (origin, clone) = cloned(&fx);

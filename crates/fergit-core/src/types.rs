@@ -512,6 +512,11 @@ pub enum Operation {
     /// Download from `remote`, or from every remote when `None`, removing remote-tracking branches
     /// whose remote branch is gone if `prune` is set.
     Fetch { remote: Option<String>, prune: bool },
+    /// Download the commits of pull request `number` from `remote`, up to `head`, its latest
+    /// commit: its source `branch` there (updating that branch's remote-tracking ref, like any
+    /// fetch), and when that doesn't bring `head` (the branch is gone, or lives in a fork), the
+    /// remote's `refs/pull/<number>/merge`, which hosts like Azure DevOps keep for each pull request.
+    FetchPullRequest { remote: String, number: u32, branch: String, head: Oid },
     /// Fetch the current branch's upstream and fast-forward the branch to it. Fails, changing no
     /// branch, if the two have diverged; merging and rebasing are separate operations.
     Pull,
