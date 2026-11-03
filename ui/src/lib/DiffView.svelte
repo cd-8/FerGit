@@ -1,22 +1,35 @@
 <!--
-  One file's diff: a header with the path, the sides compared and a way back to the graph, then the
-  changes. Text diffs are virtualized (only visible lines exist in the DOM), so diffs with hundreds of
-  thousands of lines stay cheap. Everything is rendered as text.
+  One file's diff: a header with the path, the sides compared and a way back, then the changes. Text
+  diffs are virtualized (only visible lines exist in the DOM), so diffs with hundreds of thousands of
+  lines stay cheap. Everything is rendered as text.
+
+  For a pull request it can also mark the lines that have comment threads, and offer each line number
+  as a button that starts a comment there.
 -->
 <script lang="ts">
+  import type { LineSide } from "./bindings";
   import { DiffModel, NO_NEWLINE_TEXT } from "./diff";
   import { shortId } from "./format";
   import { scrollMap } from "./graph";
   import { describeSide, type OpenDiff } from "./inspector.svelte";
+  import { lineKey } from "./review";
   import { rowWindow } from "./view.svelte";
 
   interface Props {
     diff: OpenDiff;
-    /** Back to the graph. */
+    /** Back to where the diff was opened from. */
     onclose: () => void;
+    /** What the back button says. */
+    back?: string;
+    /** Threads per line, by `lineKey`: lines listed here get a marker with the count. */
+    threads?: ReadonlyMap<string, number>;
+    /** The line a comment is being written on, by `lineKey`; it is highlighted. */
+    commenting?: string | null;
+    /** Makes line numbers buttons: called with the side and line clicked. */
+    onpickline?: (side: LineSide, line: number) => void;
   }
 
-  let { diff, onclose }: Props = $props();
+  let { diff, onclose, back = "Graph", threads, commenting = null, onpickline }: Props = $props();
 
   const LINE_HEIGHT = 20;
   const OVERSCAN = 30;
@@ -52,6 +65,14 @@
     return () => observer.disconnect();
   });
 
+  /** The `lineKey`s a row's line numbers stand for. */
+  function lineKeys(oldNumber: number | null, newNumber: number | null): string[] {
+    const keys: string[] = [];
+    if (oldNumber !== null) keys.push(lineKey("old", oldNumber));
+    if (newNumber !== null) keys.push(lineKey("new", newNumber));
+    return keys;
+  }
+
   // Scrolling for the app's key router. Offsets go through the scroll map, so they stay right when
   // a huge diff's scroll range is compressed.
   let section: HTMLElement;
@@ -86,6 +107,12 @@
       row === "last" ? scroller.scrollHeight : map.toScroll(Math.max(0, Math.min(row, count - 1)) * LINE_HEIGHT);
   }
 
+  /** Scrolls line `line` of one side into view, a few lines from the top, if the diff shows it. */
+  export function scrollToLine(side: LineSide, line: number): void {
+    const row = model?.rowOf(side, line);
+    if (row !== null && row !== undefined) scrollToRow(Math.max(0, row - 3));
+  }
+
   /** Scrolls `columns` columns right (negative: left). */
   export function scrollColumns(columns: number): void {
     if (!scroller) return;
@@ -99,9 +126,18 @@
   }
 </script>
 
+{#snippet number(side: LineSide, line: number | null)}
+  {#if onpickline && line !== null}
+    <!-- Not in the tab order: a huge diff would be thousands of stops; the threads panel has the keyboard path. -->
+    <button class="number pick" tabindex="-1" title="Comment on this line" onclick={() => onpickline(side, line)}>{line}</button>
+  {:else}
+    <span class="number">{line ?? ""}</span>
+  {/if}
+{/snippet}
+
 <section bind:this={section} class="diff" aria-label="Diff" tabindex="-1">
   <header class="diff-header">
-    <button class="button" onclick={onclose} title="Back to the graph (Esc)">← Graph</button>
+    <button class="button" onclick={onclose} title="Back (Esc)">← {back}</button>
     <span
       class="path"
       title={request.oldPath !== null && request.oldPath !== request.path
@@ -143,6 +179,7 @@
     <div
       bind:this={scroller}
       class="scroller"
+      class:annotated={threads !== undefined}
       role="region"
       aria-label="Changes"
       tabindex="0"
@@ -156,14 +193,20 @@
       >
         {#each indices as i (i)}
           {@const row = model.row(i)}
+          {@const keys = row.kind === "line" ? lineKeys(row.oldNumber, row.newNumber) : []}
           <div
             class="row {row.kind === 'line' ? row.line : row.kind}"
+            class:commenting={commenting !== null && keys.includes(commenting)}
             style:transform="translateY({i * LINE_HEIGHT + shift}px)"
           >
             {#if row.kind === "line"}
               <span class="gutter">
-                <span class="number">{row.oldNumber ?? ""}</span>
-                <span class="number">{row.newNumber ?? ""}</span>
+                {@render number("old", row.oldNumber)}
+                {@render number("new", row.newNumber)}
+                {#if threads}
+                  {@const count = keys.reduce((sum, key) => sum + (threads.get(key) ?? 0), 0)}
+                  <span class="mark">{#if count > 0}<span class="badge" title="{count} comment thread{count === 1 ? '' : 's'}">{count}</span>{/if}</span>
+                {/if}
                 <span class="sign">{SIGN[row.line]}</span>
               </span>
               <span class="text">{row.text}</span>
@@ -280,6 +323,51 @@
     width: var(--number-width);
     padding-right: 8px;
     text-align: right;
+  }
+
+  /* Line numbers that start a comment: buttons that look like the numbers they are. */
+  .number.pick {
+    height: 20px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: 20px;
+  }
+
+  .number.pick:hover {
+    background: var(--diff-hunk-bg);
+    color: var(--focus);
+  }
+
+  .scroller.annotated {
+    --gutters: calc(var(--number-width) * 2 + 5ch);
+  }
+
+  .mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3ch;
+  }
+
+  .badge {
+    min-width: 16px;
+    height: 16px;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: var(--focus);
+    color: var(--primary-fg);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    line-height: 16px;
+    text-align: center;
+  }
+
+  .commenting,
+  .commenting .gutter {
+    box-shadow: inset 3px 0 0 var(--focus);
   }
 
   .sign {

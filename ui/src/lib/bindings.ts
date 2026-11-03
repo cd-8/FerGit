@@ -92,6 +92,27 @@ export const commands = {
 	 *  operation, naming the entry this returned.
 	 */
 	undoable: (session: SessionId) => __TAURI_INVOKE<Undoable>("undoable", { session }),
+	/**
+	 *  Where the pull requests of `session`'s repository are, if a remote is on Azure DevOps. Reads the
+	 *  repository's configuration only: nothing is contacted and no credential helper runs.
+	 */
+	reviewHost: (session: SessionId) => __TAURI_INVOKE<{
+	/**  The remote naming it, e.g. `origin`; pull requests' commits are fetched from it. */
+	remote: string,
+	/**  The organization (`contoso`), or a server's collection (`tfs.contoso.local/tfs/Main`). */
+	organization: string,
+	project: string,
+	repository: string,
+} | null>("review_host", { session }),
+	/**  The pull requests `query` selects. Signs in first if needed, which may prompt. */
+	pullRequests: (session: SessionId, query: PullRequestQuery) => __TAURI_INVOKE<PullRequestSummary[]>("pull_requests", { session, query }),
+	/**  Pull request `number`, with its reviewers and discussion. */
+	pullRequest: (session: SessionId, number: number) => __TAURI_INVOKE<PullRequest>("pull_request", { session, number }),
+	/**
+	 *  Does `action` to pull request `number`. `id` identifies the request: an id already acted on is
+	 *  answered with that outcome instead of acting again. Read the pull request again afterwards.
+	 */
+	review: (session: SessionId, id: OpId, number: number, action: ReviewAction) => __TAURI_INVOKE<null>("review", { session, id, number, action }),
 };
 
 /** Events */
@@ -102,6 +123,16 @@ export const events = {
 };
 
 /* Types */
+/**  Where a thread is attached in a pull request's changes. */
+export type Anchor = {
+	/**  The file, `/`-separated from the repository's root. */
+	path: string,
+	/**  The version of the file `line` counts in: before the changes (`old`) or after (`new`). */
+	side: LineSide,
+	/**  1-based line number; 0 attaches the thread to the file as a whole. */
+	line: number,
+};
+
 /**  The error every command rejects with. The UI shows `message`; `kind` only picks wording. */
 export type AppError = {
 	kind: ErrorKind,
@@ -115,6 +146,19 @@ export type CheckoutTarget =
 { kind: "branch"; name: string } | 
 /**  A commit, detaching HEAD. */
 { kind: "commit"; id: Oid };
+
+export type Comment = {
+	/**  Unique within its thread. */
+	id: number,
+	/**  The comment this replies to; 0 for the thread's first comment. */
+	parent: number,
+	author: Person,
+	/**  Markdown, as the author wrote it. Shown as plain text. */
+	text: string,
+	publishedAt: number,
+	/**  Changed since it was published. */
+	edited: boolean,
+};
 
 export type CommitDetails = {
 	id: Oid,
@@ -291,6 +335,8 @@ export type Hunk = {
 
 export type LineKind = "context" | "added" | "removed";
 
+export type LineSide = "old" | "new";
+
 export type MergeMode = 
 /**  Fast-forward when the branch has no commits of its own, else create a merge commit. */
 "ff" | 
@@ -298,6 +344,13 @@ export type MergeMode =
 "noFf" | 
 /**  Commit the combined changes as one ordinary commit, recording no merge. */
 "squash";
+
+/**  Whether the host could merge the pull request when it last tried. */
+export type MergeStatus = "succeeded" | "conflicts" | 
+/**  A merge is being attempted. */
+"pending" | 
+/**  It failed, or a policy rejected it. */
+"failed" | "unknown";
 
 /**  A git object id (SHA-1). Crosses IPC as a 40-character lowercase hex string. */
 export type Oid = string;
@@ -407,6 +460,13 @@ export type Operation =
  */
 { kind: "fetch"; remote: string | null; prune: boolean } | 
 /**
+ *  Download the commits of pull request `number` from `remote`, up to `head`, its latest
+ *  commit: its source `branch` there (updating that branch's remote-tracking ref, like any
+ *  fetch), and when that doesn't bring `head` (the branch is gone, or lives in a fork), the
+ *  remote's `refs/pull/<number>/merge`, which hosts like Azure DevOps keep for each pull request.
+ */
+{ kind: "fetchPullRequest"; remote: string; number: number; branch: string; head: Oid } | 
+/**
  *  Fetch the current branch's upstream and fast-forward the branch to it. Fails, changing no
  *  branch, if the two have diverged; merging and rebasing are separate operations.
  */
@@ -468,6 +528,71 @@ export type Operation =
  *  changing nothing, if any of those has moved since.
  */
 { kind: "undo"; entry: OpId };
+
+/**  A user or group, as the host identifies them. */
+export type Person = {
+	/**  The host's id for them; stable, unlike names. */
+	id: string,
+	name: string,
+	/**  Usually an email address; for groups, `[Project]\Team`. */
+	uniqueName: string,
+};
+
+/**  Everything shown about one pull request. */
+export type PullRequest = {
+	summary: PullRequestSummary,
+	description: string,
+	/**  Its page in the host's web interface. */
+	webUrl: string,
+	/**  The signed-in user: whose vote the vote buttons set. */
+	me: Person,
+	mergeStatus: MergeStatus,
+	/**
+	 *  Its latest iteration (each push to the source branch makes one), which `head` and the
+	 *  threads' lines refer to.
+	 */
+	iteration: number,
+	/**
+	 *  What its changes are measured from: the commit its source and target branches last had in
+	 *  common. `None` before the host has computed it.
+	 */
+	base: Oid | null,
+	/**  Its latest commit. */
+	head: Oid | null,
+	/**
+	 *  Whether `base` and `head` are both in the local repository, so its changes can be shown;
+	 *  fetch them with the `fetchPullRequest` operation if not.
+	 */
+	haveCommits: boolean,
+	/**  Discussion threads, oldest first; status messages from the host are left out. */
+	threads: Thread[],
+};
+
+/**  Which pull requests to list. */
+export type PullRequestQuery = 
+/**  Every active one. */
+"active" | 
+/**  Active ones the signed-in user created. */
+"mine" | 
+/**  Active ones the signed-in user is a reviewer of (directly or through a group). */
+"reviewing" | "completed" | "abandoned";
+
+export type PullRequestStatus = "active" | "completed" | "abandoned";
+
+/**  A pull request, as lists show it. */
+export type PullRequestSummary = {
+	number: number,
+	title: string,
+	author: Person,
+	/**  Seconds since the Unix epoch. */
+	createdAt: number,
+	status: PullRequestStatus,
+	draft: boolean,
+	/**  Branch names without `refs/heads/`: what is merged, and where to. */
+	sourceBranch: string,
+	targetBranch: string,
+	reviewers: Reviewer[],
+};
 
 /**  A ref that differed between before and after an operation. `None` means the ref didn't exist. */
 export type RefChange = {
@@ -588,6 +713,62 @@ export type Rev =
 /**  A ref by full name. */
 { kind: "ref"; name: string } | { kind: "commit"; id: Oid };
 
+/**  Something the signed-in user does to a pull request. */
+export type ReviewAction = 
+/**  Set their vote; `none` resets it. */
+{ kind: "vote"; vote: Vote } | 
+/**
+ *  Start a thread: on the pull request as a whole, or at `anchor` in the changes of iteration
+ *  `iteration` (the [`PullRequest::iteration`] shown), which its line counts in.
+ */
+{ kind: "comment"; text: string; anchor: Anchor | null; iteration: number } | 
+/**  Answer comment `parent` of `thread`. */
+{ kind: "reply"; thread: number; parent: number; text: string } | 
+/**  Resolve a thread, or make it active again. */
+{ kind: "setStatus"; thread: number; status: ThreadStatus };
+
+/**  Why talking to the host failed. */
+export type ReviewError = {
+	kind: ReviewErrorKind,
+	/**  What went wrong, for the user. */
+	message: string,
+};
+
+export type ReviewErrorKind = 
+/**  No remote names an Azure DevOps repository. */
+"noHost" | 
+/**  No credentials, or the host refused them; trying again asks for new ones. */
+"signIn" | 
+/**  Signed in, but not allowed to do this. */
+"forbidden" | "notFound" | 
+/**  The host couldn't be reached. */
+"unreachable" | 
+/**  The host refused the request as it was. */
+"refused" | 
+/**  The host failed, or answered something FerGit doesn't understand. */
+"server";
+
+/**  Where a repository's pull requests live: the Azure DevOps repository one of its remotes names. */
+export type ReviewHost = {
+	/**  The remote naming it, e.g. `origin`; pull requests' commits are fetched from it. */
+	remote: string,
+	/**  The organization (`contoso`), or a server's collection (`tfs.contoso.local/tfs/Main`). */
+	organization: string,
+	project: string,
+	repository: string,
+};
+
+export type Reviewer = {
+	person: Person,
+	vote: Vote,
+	/**  A branch policy requires their vote. */
+	required: boolean,
+	/**  A group or team, whose vote rolls up its members'. */
+	group: boolean,
+	/**  They declined to review. */
+	declined: boolean,
+};
+
 export type Row = {
 	kind: RowKind,
 	/**  Commit id; [`Oid::ZERO`] for the uncommitted-changes row. */
@@ -650,6 +831,21 @@ export type Signature = {
 	offsetMinutes: number,
 };
 
+/**  A comment and its replies. */
+export type Thread = {
+	id: number,
+	status: ThreadStatus,
+	/**  `None` for a comment on the pull request as a whole. */
+	anchor: Anchor | null,
+	/**  Oldest first; deleted comments are left out. */
+	comments: Comment[],
+	updatedAt: number,
+};
+
+export type ThreadStatus = "active" | "pending" | 
+/**  Resolved. */
+"fixed" | "wontFix" | "closed" | "byDesign" | "unknown";
+
 /**  What [`Operation::Undo`] would do now. */
 export type Undoable = 
 /**
@@ -681,6 +877,11 @@ export type UpstreamState =
  *  and pruned, or never fetched).
  */
 { kind: "gone" };
+
+/**  A reviewer's verdict. */
+export type Vote = "approved" | "approvedWithSuggestions" | 
+/**  No vote (yet), or a vote reset. */
+"none" | "waitingForAuthor" | "rejected";
 
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;

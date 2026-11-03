@@ -89,7 +89,7 @@ fn plan(entry: &JournalEntry) -> Plan {
     let stash = entry.ref_changes.iter().find(|change| change.name == "refs/stash");
     match &entry.operation {
         // Only moves remote-tracking branches, which undo leaves alone.
-        Operation::Fetch { .. } => Plan::PassOver,
+        Operation::Fetch { .. } | Operation::FetchPullRequest { .. } => Plan::PassOver,
         Operation::Push { .. } if entry.error.is_none() => {
             Plan::Blocked("A push can't be undone: the remote already has the commits.")
         }

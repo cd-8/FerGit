@@ -114,6 +114,16 @@ export class DiffModel {
     this.maxLineNumber = maxLineNumber;
   }
 
+  /**
+   * The display row of line `line` of the old or new version, or `null` if the diff doesn't show
+   * that line (it is outside every hunk).
+   */
+  rowOf(side: "old" | "new", line: number): number | null {
+    const numbers = side === "old" ? this.#oldNumber : this.#newNumber;
+    const row = line > 0 ? numbers.indexOf(line) : -1;
+    return row < 0 ? null : row;
+  }
+
   /** Display row `index`, which must be in `0..rowCount`. */
   row(index: number): DiffRow {
     const hunk = this.#hunks[this.#hunkOf[index]];

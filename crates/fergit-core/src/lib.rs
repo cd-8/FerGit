@@ -4,6 +4,7 @@
 pub mod askpass;
 mod id_map;
 pub mod repo;
+pub mod review;
 pub mod session;
 mod types;
 

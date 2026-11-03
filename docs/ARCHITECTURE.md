@@ -25,6 +25,7 @@ Each layer works with different concepts from the one below it (APOSD ch7):
 | `ui/` (Svelte + TS) | pixels, rows, clicks, user intents | everything about git |
 | `src-tauri` | IPC messages | Tauri itself; it's only a thin dispatcher |
 | `session` | snapshots, generations, operations | concurrency, file watching, refresh, the operation journal |
+| `review` | pull requests, threads, votes | Azure DevOps' REST API and URL forms, signing in through git's credential helpers |
 | `graph` | lanes, columns, edges | the layout algorithm, color assignment |
 | `repo` | commits, refs, diffs, `Operation` | gix vs git CLI, argument quoting, output parsing, locks, locale |
 
@@ -36,7 +37,7 @@ FerGit/
 ├─ package.json            # frontend deps + Tauri CLI (at the root so the CLI finds src-tauri)
 ├─ crates/fergit-graph/    # pure layout: no I/O, no gix
 ├─ crates/fergit-core/     # no Tauri dependency, so it can be tested headless
-│  └─ src/{repo/, session/, types.rs}
+│  └─ src/{repo/, review/, session/, types.rs}
 ├─ src-tauri/              # commands, events, capabilities, askpass helper
 └─ ui/                     # Svelte 5 + TS, generated src/lib/bindings.ts
 ```
@@ -159,6 +160,16 @@ impl Snapshot {
 
   Load commit messages only for visible rows. That's about 50 MB for 1.3M commits, and none of it shows in the interface.
 
+### 2.4 `review`: pull requests on Azure DevOps
+
+Added 2026-11-02. A peer of `session` over `repo`, in `fergit-core` so it is tested headless (against a fake server on loopback).
+
+- **Which repository.** The Azure DevOps repository `origin` names, else the first remote naming one. Recognized from the URL alone, with nothing contacted: `dev.azure.com`, `*.visualstudio.com`, both SSH forms, and Azure DevOps Server (`https://host/{collection}/{project}/_git/{repo}`).
+- **Derived data, as everywhere.** Every read asks the host. After an action (vote, comment, reply, thread state) the UI reads the pull request again rather than patching what it shows. Actions carry a UI-generated id and run at most once, like operations, so a double click posts one comment.
+- **Changes come from git, not the API.** A pull request's changes are the diff from its latest iteration's common commit to its source commit, read locally with the same `changes`/`file_diff` as everything else (§3, one diff mechanism). If those commits aren't local, the `FetchPullRequest` operation fetches the source branch, falling back to the host's `refs/pull/<n>/merge` for a deleted branch or a fork. It is an ordinary operation: single writer, journaled, and passed over by undo like a fetch.
+- **Line positions.** Threads are read tracked to the latest iteration (`$iteration`), so their lines match the diff shown. A new comment carries the iteration it was written against and, when the host lists one, the file's change tracking id, so Azure DevOps follows it through later pushes.
+- **Comments are Markdown, shown as plain text.** Never rendered as HTML (§6).
+
 ---
 
 ## 3. IPC contract (Tauri 2)
@@ -177,6 +188,11 @@ set_filter(repo, Filter { refs, path })         -> RepoInfo       // a new snaps
 refs(repo)                                      -> Vec<RefLabel>  // for the filter picker
 run(repo, op_id, Operation, Channel<Progress>)  -> OpOutcome
 event repo_changed { repo, generation, row_count }
+
+review_host(repo)                               -> Option<ReviewHost>  // config only, no network
+pull_requests(repo, query)                      -> Vec<PullRequestSummary>
+pull_request(repo, number)                      -> PullRequest     // reviewers, threads, base/head
+review(repo, id, number, ReviewAction)          -> ()              // then read the pull request again
 ```
 
 - **`repo` is a session id, one per tab.** The backend keeps a registry of open sessions, each with its own snapshot and file watcher. A repository is open at most once: opening it again, by any path inside it, returns its existing session, and the UI brings that tab to the front. Ids are never reused, so a late request or event for a closed tab can't reach another one.
@@ -203,6 +219,7 @@ event repo_changed { repo, generation, row_count }
 | `index.lock` briefly held | Handled inside `repo` with a short retry |
 | Auth failure, rejected push, stale lease, failing hook | One result type, `OpOutcome::Failed { kind, message, stderr }`, handled in one place in the UI (a toast plus "show git output"). The message is written where the failure is detected. |
 | Graph layout's internal consistency check fails | A bug: `debug_assert!`, plus an error on that view only, with a report button |
+| Azure DevOps unreachable, sign-in refused, not allowed | Expected, not a bug: the review commands reject with `ReviewError { kind, message }`, shown in place in the review view, with "Sign in again" or "Try again" where that can help. What was typed is kept. |
 
 ---
 
@@ -250,8 +267,15 @@ event repo_changed { repo, generation, row_count }
   - Git Credential Manager runs with `GCM_INTERACTIVE=never`: it can still supply stored credentials, but it can't open its own sign-in windows. Any `GIT_ASKPASS`/`SSH_ASKPASS` inherited from the environment is dropped. The trade-off is no browser OAuth sign-in from FerGit; use a token in the dialog instead.
   - The journal lives at `<app local data dir>/journal.jsonl`, one file for all repositories. Each entry records the repository's root.
   - Tokens and `https://user:token@` URLs are scrubbed before anything is journaled.
+- **Pull request review (Azure DevOps).**
+  - *Sign-in is git's.* FerGit asks `git credential fill` for the credential git would use to fetch from the remote. With Git Credential Manager that is the user's Microsoft Entra ID (SSO) sign-in, refreshed silently, or a personal access token it keeps; otherwise FerGit's askpass prompt, where a PAT with Code (Read & write) scope can be entered. `git credential approve`/`reject` follow, as after a fetch, so a typed token is stored by the user's own helper and a refused one is forgotten. GCM stays non-interactive (above).
+  - *Held in memory only*, per organization, in the Rust process. It never reaches the webview, the journal or any file of FerGit's, and `Debug` output masks it. A cached token the host refuses is retried once with a fresh one from the helpers (it may just have expired) before anything is rejected.
+  - *Sent only where git would send it:* the organization's URL derived from the remote, over HTTPS (plain HTTP only to loopback). Redirects aren't followed, and `X-TFS-FedAuthRedirect: Suppress` makes a refused sign-in a 401 rather than a sign-in page. TLS uses the operating system's stack and certificate store (SChannel on Windows), so a company's TLS-inspecting proxy and its root certificate work as they do for git; the system proxy settings are used.
+  - *Only when the user asks.* Nothing contacts the host, or runs a credential helper (which a repository's configuration can name), until the user opens the pull requests or acts. Finding the host only parses the configuration.
+  - *The webview still has no network access.* The CSP and capabilities are unchanged: every request is made in Rust, behind the four review commands.
+  - *Hostile content.* Titles, descriptions, comments and names come from other people: rendered as text only, never as HTML or Markdown.
 - **SSO, MQTT, certificates.**
-  - A local app needs none of these.
+  - A local app needs no MQTT or device certificates. SSO is the user's Entra ID sign-in through Git Credential Manager, above; FerGit adds no identity system of its own.
   - If the Azure journal upload ships, authenticate with Entra ID or certificates issued only to enrolled machines, over TLS.
 - **Updates.** Use Tauri's updater with signed artifacts, and Authenticode signing on Windows.
 
@@ -262,10 +286,12 @@ event repo_changed { repo, generation, row_count }
 - **Reads:** local repo contents only.
 - **Stores locally:** `settings.json`, the recent-repos list, the operation journal (immutable, append-only) and an avatar cache.
 - **Sends off the machine only:**
-  - git network operations the user starts (fetch, pull, push)
+  - git network operations the user starts (fetch, pull, push, fetching a pull request's commits)
+  - Azure DevOps REST requests, once the user opens the pull requests: reading pull requests, iterations, threads and who is signed in, and the votes, comments, replies and thread states the user sets. Nothing is cached on disk.
   - avatar lookups, **opt-in** because they send email hashes to Gravatar or GitHub
   - the optional Azure journal upload
 - **No telemetry by default.**
+- **Audit trail.** The operation journal stays the immutable, append-only record of what FerGit did to repositories. Review actions are not journaled there: they change nothing in git, and Azure DevOps keeps its own history of every vote, comment and state change, attributed to the signed-in user.
 
 ---
 
@@ -284,6 +310,8 @@ event repo_changed { repo, generation, row_count }
    - Property tests and fuzzing for the layout.
    - Integration tests that *actually trigger* the failure paths: a push rejected by a local bare remote, forced conflicts, a held `index.lock`.
    - Performance CI and a security pass.
+
+7. **Pull request review (Azure DevOps).** List, read, see changes, vote, comment on the pull request or on lines, reply, resolve; fetch a pull request's commits. Built 2026-11-02 on `feat/pull-requests`.
 
 ### Testing
 

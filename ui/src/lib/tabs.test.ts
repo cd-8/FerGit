@@ -50,6 +50,10 @@ function fakeClient(session: number, closed: number[]): RepoClient {
     refs: never,
     runOperation: never,
     undoable: never,
+    reviewHost: never,
+    pullRequests: never,
+    pullRequest: never,
+    review: never,
     close: async () => void closed.push(session),
   };
 }

@@ -267,6 +267,12 @@ impl Session {
         self.repo.commit_details(id)
     }
 
+    /// The repository, for what isn't part of a snapshot: its remotes, whether commits are present,
+    /// credentials for its host. Change it only through [`Session::run`].
+    pub fn repo(&self) -> &Repo {
+        &self.repo
+    }
+
     /// Files that differ between `from` and `to`; see [`Repo::changes`]. Reads the repository as it
     /// is now, not the snapshot: the index and worktree have no history to snapshot.
     pub fn changes(&self, from: Option<DiffSide>, to: DiffSide) -> Result<Vec<FileChange>, RepoError> {

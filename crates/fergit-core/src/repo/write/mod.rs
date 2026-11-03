@@ -6,6 +6,7 @@
 //! and always follow `--end-of-options`, so a branch named `--upload-pack=…` can never become an
 //! option.
 
+mod credential;
 mod git;
 mod history;
 mod restore;
@@ -15,11 +16,13 @@ use std::path::Path;
 
 use gix::bstr::{BStr, ByteSlice};
 
+pub use self::credential::{Credential, CredentialError};
+pub(super) use self::credential::{credential_fill, credential_verdict};
 pub use self::restore::{HeadMove, RefMove, Restore, WorktreeMode};
 use self::git::{Git, Output};
 use super::upstream::current_config;
 use crate::askpass::Askpass;
-use crate::types::{CheckoutTarget, ForceMode, OpError, OpErrorKind, Operation, RepoState, Rev};
+use crate::types::{CheckoutTarget, ForceMode, Oid, OpError, OpErrorKind, Operation, RepoState, Rev};
 
 /// Why an operation failed, and git's exit code if it got as far as running git.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +162,9 @@ impl Writer<'_> {
                 let from = remote.as_deref().unwrap_or("the remotes");
                 self.git(&args).map_err(|out| network_failure(out, &format!("Can't fetch from {from}")))
             }
+            Operation::FetchPullRequest { remote, number, branch, head } => {
+                self.fetch_pull_request(remote, *number, branch, *head)
+            }
             Operation::Pull => self.git(&["pull", "--no-rebase", "--ff-only", "--progress"]).map_err(pull_failure),
             Operation::Push { branch, remote, force, set_upstream } => {
                 let full_name = branch_ref(branch)?;
@@ -272,6 +278,33 @@ impl Writer<'_> {
                 OpErrorKind::InvalidInput,
                 format!("{branch} has no upstream, and there are several remotes; choose one to push to."),
             )),
+        }
+    }
+
+    /// See [`Operation::FetchPullRequest`].
+    fn fetch_pull_request(&mut self, remote: &str, number: u32, branch: &str, head: Oid) -> Result<(), OpFailure> {
+        let source = branch_ref(branch)?;
+        self.configured_remote(remote)?;
+        let context = format!("Can't fetch pull request !{number} from {remote}");
+        let has_head = |writer: &Self| writer.repo.has_object(super::to_object_id(head));
+        match self.git(&["fetch", "--no-tags", "--progress", "--end-of-options", remote, &source]) {
+            Ok(()) if has_head(self) => return Ok(()),
+            Ok(()) => {}
+            // A missing branch is what the pull request ref is for; any other failure (no network,
+            // no credentials) would only repeat.
+            Err(out) if !out.stderr().contains("couldn't find remote ref") => return Err(network_failure(out, &context)),
+            Err(_) => {}
+        }
+        let merge = format!("refs/pull/{number}/merge");
+        self.git(&["fetch", "--no-tags", "--progress", "--end-of-options", remote, &merge])
+            .map_err(|out| network_failure(out, &context))?;
+        if has_head(self) {
+            Ok(())
+        } else {
+            Err(OpFailure::before_git(
+                OpErrorKind::Git,
+                format!("{context}: neither {branch} nor the pull request's own ref there has its latest commit."),
+            ))
         }
     }
 

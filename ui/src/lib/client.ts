@@ -9,8 +9,13 @@ import {
   type OpOutcome,
   type Oid,
   type Operation,
+  type PullRequest,
+  type PullRequestQuery,
+  type PullRequestSummary,
   type RefLabel,
   type RepoInfo,
+  type ReviewAction,
+  type ReviewHost,
   type RowLocation,
   type RowsPage,
   type SearchResult,
@@ -39,6 +44,15 @@ export interface RepoClient {
   runOperation(id: OpId, op: Operation): Promise<OpOutcome>;
   /** What undo would restore now in this repository. */
   undoable(): Promise<Undoable>;
+  /** Where the repository's pull requests are (no network); `null` if no remote is on Azure DevOps. */
+  reviewHost(): Promise<ReviewHost | null>;
+  /**
+   * Pull requests, one of them, and acting on one as request `id`. These talk to the host and may
+   * prompt for credentials; they reject with a `ReviewError`, which the review view shows in place.
+   */
+  pullRequests(query: PullRequestQuery): Promise<PullRequestSummary[]>;
+  pullRequest(number: number): Promise<PullRequest>;
+  review(id: OpId, number: number, action: ReviewAction): Promise<void>;
   /**
    * Closes the session. From then on the client drops requests, and answers still on their way:
    * their promises never settle, so nothing acts on a closed tab and a request that raced the close
@@ -68,6 +82,10 @@ export function repoClient(session: SessionId): RepoClient {
     refs: () => call(() => commands.refs(session)),
     runOperation: (id, op) => call(() => commands.runOperation(session, id, op)),
     undoable: () => call(() => commands.undoable(session)),
+    reviewHost: () => call(() => commands.reviewHost(session)),
+    pullRequests: (query) => call(() => commands.pullRequests(session, query)),
+    pullRequest: (number) => call(() => commands.pullRequest(session, number)),
+    review: (id, number, action) => call(() => commands.review(session, id, number, action).then(() => undefined)),
     close: async () => {
       if (closed) return;
       closed = true;

@@ -2,8 +2,9 @@
 // look at graph rendering (relationship labels, upstream badges) and at operations: pushes fail,
 // merges, rebases, cherry-picks and reverts stop with conflicts until continued or aborted, and undo
 // always offers to undo a reset. It opens that repository under three names, one tab each, to look
-// at tabs side by side in split panes. Served by `npm run dev` at
-// /mock.html; the production build doesn't include it.
+// at tabs side by side in split panes. The first two have pull requests on a pretend Azure DevOps
+// (see `./mockReview.ts`). Served by `npm run dev` at /mock.html; the production build doesn't
+// include it.
 
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { mount } from "svelte";
@@ -23,6 +24,7 @@ import type {
   Upstream,
 } from "../lib/bindings";
 import { session } from "../lib/session.svelte";
+import { mockReview } from "./mockReview";
 
 const up = (from: number, to: number, color: number): Edge => ({ half: "upper", from, to, color });
 const down = (from: number, to: number, color: number): Edge => ({ half: "lower", from, to, color });
@@ -186,6 +188,8 @@ function openRepo(root: string): { session: number; info: RepoInfo } {
   return { session, info };
 }
 
+const review = mockReview(rows[9].id, rows[2].id);
+
 mockIPC((command, payload) => {
   const args = (payload ?? {}) as Record<string, unknown>;
   if (command === "open_repo") return openRepo(String(args.path));
@@ -193,6 +197,8 @@ mockIPC((command, payload) => {
   const session = Number(args.session);
   const info = repos.get(session);
   if (!info) return null;
+  const reviewed = review(command, args, info.root);
+  if (reviewed !== undefined) return reviewed;
   switch (command) {
     case "close_repo":
       repos.delete(session);

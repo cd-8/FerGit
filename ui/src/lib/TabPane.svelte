@@ -1,6 +1,7 @@
 <!--
   One tab's repository: its toolbar, what the repository is in the middle of, the graph, the diff
-  opened over it, the details panel, the find bar, the filter picker and the graph's context menu.
+  opened over it, the details panel, the find bar, the filter picker, the graph's context menu, and
+  its pull requests, shown over all of those when opened.
   Every open tab keeps its pane mounted, hidden by the app while another tab of its group is shown,
   so switching back finds the graph scrolled, the files focused and the diff open exactly as they were.
 -->
@@ -19,6 +20,7 @@
   import type { Command, KeyContext } from "./keys";
   import { menuFor, type MenuContext, type MenuEntry, type MenuRequest } from "./menu";
   import OperationStatus from "./OperationStatus.svelte";
+  import ReviewView from "./ReviewView.svelte";
   import { settings } from "./settings.svelte";
   import StateBanner from "./StateBanner.svelte";
   import type { Tab } from "./tabs.svelte";
@@ -37,6 +39,7 @@
   let detailsPanel = $state<ReturnType<typeof DetailsPanel>>();
   let diffView = $state<ReturnType<typeof DiffView>>();
   let findBar = $state<ReturnType<typeof FindBar>>();
+  let reviewView = $state<ReturnType<typeof ReviewView>>();
   /** The open context menu; where focus was before it opened goes back there when it closes. */
   let menu = $state.raw<{ x: number; y: number; entries: MenuEntry[]; returnFocus: HTMLElement | null } | null>(null);
 
@@ -88,8 +91,9 @@
     untrack(() => tab.finder.sync());
   });
 
-  /** Opens the find bar (closing the diff over the graph) and focuses it. */
+  /** Opens the find bar (closing the diff over the graph, and the review) and focuses it. */
   async function openFind(): Promise<void> {
+    if (tab.review.open) tab.review.toggle(false);
     if (tab.inspector.diff) closeDiff();
     tab.finder.show();
     await tick();
@@ -121,19 +125,33 @@
     focusBeforeDiff = null;
   }
 
-  /** Focuses what the keyboard works on: the open diff, or else the graph. */
+  /** Shows or hides the pull requests, focusing what is shown. */
+  async function toggleReview(open = !tab.review.open): Promise<void> {
+    tab.review.toggle(open);
+    await tick();
+    focus();
+  }
+
+  /** Focuses what the keyboard works on: the review, else the open diff, else the graph. */
   export function focus(): void {
-    if (tab.inspector.diff) diffView?.focus();
+    if (tab.review.open) reviewView?.focus();
+    else if (tab.inspector.diff) diffView?.focus();
     else graphView?.focus();
+  }
+
+  /** The diff the keyboard scrolls: the review's, while the review is shown. */
+  function activeDiff(): ReturnType<typeof DiffView> | undefined {
+    return tab.review.open ? reviewView?.diff() : diffView;
   }
 
   /**
    * Esc, pressed in `context`: closes the find bar being typed in, else the filter picker, else the
-   * diff, else leaves compare mode, else closes the find bar.
+   * review's diff or the review, else the diff, else leaves compare mode, else closes the find bar.
    */
   export function escape(context: KeyContext): void {
     if (context === "find") closeFind();
     else if (tab.filterOpen) tab.filterOpen = false;
+    else if (tab.review.open) reviewView?.escape();
     else if (tab.inspector.diff) closeDiff();
     else if (tab.view.compared !== null) tab.view.compare(null);
     else if (tab.finder.open) closeFind();
@@ -144,7 +162,8 @@
     const view = tab.view;
     switch (command.kind) {
       case "close":
-        closeDiff();
+        if (tab.review.open) reviewView?.escape();
+        else closeDiff();
         return;
       case "open":
         detailsPanel?.openFocused();
@@ -163,23 +182,23 @@
         else focus();
         return;
       case "scrollX":
-        diffView?.scrollColumns(command.by);
+        activeDiff()?.scrollColumns(command.by);
         return;
       case "lineEdge":
-        diffView?.scrollToEdge(command.edge);
+        activeDiff()?.scrollToEdge(command.edge);
         return;
       case "move":
         if (context === "files") detailsPanel?.moveFile(command.by);
-        else if (context === "diff") diffView?.scrollLines(command.by);
+        else if (context === "diff") activeDiff()?.scrollLines(command.by);
         else view.moveSelection(command.by);
         return;
       case "page":
-        if (context === "diff") diffView?.scrollPages(command.by);
+        if (context === "diff") activeDiff()?.scrollPages(command.by);
         else view.pageSelection(command.by);
         return;
       case "goto":
         if (context === "files") detailsPanel?.gotoFile(command.row);
-        else if (context === "diff") diffView?.scrollToRow(command.row);
+        else if (context === "diff") activeDiff()?.scrollToRow(command.row);
         else view.selectRow(command.row);
         return;
     }
@@ -223,6 +242,17 @@
       <input type="checkbox" bind:checked={settings.showRelations} />
       Relationships
     </label>
+    {#if tab.review.host}
+      <button
+        class="button"
+        class:active={tab.review.open}
+        aria-pressed={tab.review.open}
+        onclick={() => void toggleReview()}
+        title="Review the pull requests of {tab.review.host.organization}/{tab.review.host.project} on Azure DevOps"
+      >
+        Pull requests
+      </button>
+    {/if}
     <button
       class="button"
       onclick={() => void perform(tab, { kind: "fetch", remote: null })}
@@ -251,7 +281,7 @@
   <div class="content">
     <div class="workspace">
       <!-- The graph stays laid out under an open diff, so closing the diff finds it unchanged. -->
-      <div class="graph-layer" inert={tab.inspector.diff !== null}>
+      <div class="graph-layer" inert={tab.inspector.diff !== null || tab.review.open}>
         <GraphView
           bind:this={graphView}
           view={tab.view}
@@ -287,6 +317,11 @@
         onapply={applyFilter}
         onclose={() => (tab.filterOpen = false)}
       />
+    {/if}
+    {#if tab.review.open}
+      <div class="review-layer">
+        <ReviewView bind:this={reviewView} review={tab.review} onclose={() => void toggleReview(false)} />
+      </div>
     {/if}
   </div>
   {#if menu}
@@ -408,6 +443,15 @@
     position: absolute;
     inset: 0;
     z-index: 3;
+    display: flex;
+    background: var(--bg);
+  }
+
+  /* Over the graph, its diff and the panels beside it, which stay as they were underneath. */
+  .review-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
     display: flex;
     background: var(--bg);
   }

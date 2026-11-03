@@ -16,6 +16,7 @@ import {
   type Target,
 } from "./layout";
 import { Operations } from "./operations.svelte";
+import { Review } from "./review.svelte";
 import type { SavedTabs } from "./settings.svelte";
 import { RepoView } from "./view.svelte";
 
@@ -34,8 +35,9 @@ export interface TabsMemory {
 
 /**
  * One open repository: its rows, scroll position and selection (the view), what is shown about the
- * selection (the inspector), the operations running on it, its find bar and filter, and whether the
- * details panel is open. All of it stays as it is while other tabs are in front.
+ * selection (the inspector), the operations running on it, its find bar and filter, its pull
+ * requests, and whether the details panel is open. All of it stays as it is while other tabs are in
+ * front.
  */
 export class Tab {
   readonly session: SessionId;
@@ -44,6 +46,7 @@ export class Tab {
   readonly inspector: Inspector;
   readonly operations: Operations;
   readonly finder: Finder;
+  readonly review: Review;
   #info = $state.raw<RepoInfo>() as RepoInfo;
   /**
    * Counts refresh results and change events taken in, including those that leave the generation
@@ -64,6 +67,8 @@ export class Tab {
     this.inspector = new Inspector(client);
     this.operations = new Operations(client, (info) => this.adopt(info));
     this.finder = new Finder(() => this.view, client);
+    this.review = new Review(client, this.operations);
+    void this.review.findHost();
   }
 
   /** As of the newest open, refresh or change event. */

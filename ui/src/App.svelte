@@ -137,6 +137,8 @@
       return control && !control.matches("button.file") ? "other" : "files";
     }
     if (element?.closest(".tabstrip, .topbar, .banner, .empty, .failure, .filter-panel")) return "other";
+    // In the pull requests, only the diff's lines take the diff's keys; everything else is controls.
+    if (tabs.active?.review.open) return element?.closest(".review .scroller") ? "diff" : "other";
     return tabs.active?.inspector.diff ? "diff" : "graph";
   }
 
